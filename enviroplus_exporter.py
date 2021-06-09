@@ -12,11 +12,11 @@ from prometheus_client import start_http_server, Gauge, Histogram
 
 from bme280 import BME280
 from enviroplus import gas
+from enviroplus.noise import Noise
 from pms5003 import PMS5003, ReadTimeoutError as pmsReadTimeoutError
 
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
-
 
 try:
     from smbus2 import SMBus
@@ -48,6 +48,7 @@ DEBUG = os.getenv('DEBUG', 'false') == 'true'
 bus = SMBus(1)
 bme280 = BME280(i2c_dev=bus)
 pms5003 = PMS5003()
+noise = Noise()
 
 TEMPERATURE = Gauge('temperature','Temperature measured (*C)')
 PRESSURE = Gauge('pressure','Pressure measured (hPa)')
@@ -68,6 +69,8 @@ NH3_HIST = Histogram('nh3_measurements', 'Histogram of nh3 measurements', bucket
 PM1_HIST = Histogram('pm1_measurements', 'Histogram of Particulate Matter of diameter less than 1 micron measurements', buckets=(0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100))
 PM25_HIST = Histogram('pm25_measurements', 'Histogram of Particulate Matter of diameter less than 2.5 micron measurements', buckets=(0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100))
 PM10_HIST = Histogram('pm10_measurements', 'Histogram of Particulate Matter of diameter less than 10 micron measurements', buckets=(0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100))
+
+NOISE = Gauge('noise','Measure amplitude from specific frequency bins')
 
 # Setup InfluxDB
 # You can generate an InfluxDB Token from the Tokens Tab in the InfluxDB Cloud UI
@@ -178,6 +181,20 @@ def get_particulates():
         PM1_HIST.observe(pms_data.pm_ug_per_m3(1.0))
         PM25_HIST.observe(pms_data.pm_ug_per_m3(2.5) - pms_data.pm_ug_per_m3(1.0))
         PM10_HIST.observe(pms_data.pm_ug_per_m3(10) - pms_data.pm_ug_per_m3(2.5))
+        
+def get_noise():
+    """Get noise"""
+    try:
+        amps = noise.get_amplitudes_at_frequency_ranges([
+            (100, 200),
+            (500, 600),
+            (1000, 1200)
+        ])
+        amps = [n * 32 for n in amps]
+        NOISE.set(amps[0])
+    except IOError:
+        logging.error("Could not get noise readings. Resetting i2c.")
+        reset_i2c()
 
 def collect_all_data():
     """Collects all the data currently set"""
@@ -193,6 +210,7 @@ def collect_all_data():
     sensor_data['pm1'] = PM1.collect()[0].samples[0].value
     sensor_data['pm25'] = PM25.collect()[0].samples[0].value
     sensor_data['pm10'] = PM10.collect()[0].samples[0].value
+    sensor_data['noise'] = NOISE.collect()[0].samples[0].value
     return sensor_data
 
 def post_to_influxdb():
@@ -321,6 +339,7 @@ if __name__ == '__main__':
         get_pressure()
         get_humidity()
         get_light()
+        get_noise()
         if not args.enviro:
             get_gas()
             get_particulates()
